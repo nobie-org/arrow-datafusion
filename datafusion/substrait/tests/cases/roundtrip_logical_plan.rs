@@ -934,6 +934,7 @@ async fn test_alias(sql_with_alias: &str, sql_no_alias: &str) -> Result<()> {
 async fn roundtrip_with_ctx(sql: &str, ctx: SessionContext) -> Result<()> {
     let df = ctx.sql(sql).await?;
     let plan = df.into_optimized_plan()?;
+    println!("{plan:#?}");
     let proto = to_substrait_plan(&plan, &ctx)?;
     let plan2 = from_substrait_plan(&ctx, &proto).await?;
     let plan2 = ctx.state().optimize(&plan2)?;
