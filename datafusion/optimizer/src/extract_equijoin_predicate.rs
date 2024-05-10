@@ -88,7 +88,7 @@ impl OptimizerRule for ExtractEquijoinPredicate {
                 let left_schema = left.schema();
                 let right_schema = right.schema();
                 let (equijoin_predicates, non_equijoin_expr) =
-                    split_eq_and_noneq_join_predicate(expr, left_schema, right_schema)?;
+                    split_eq_and_noneq_join_predicate(expr.clone(), left_schema, right_schema)?;
 
                 if !equijoin_predicates.is_empty() {
                     on.extend(equijoin_predicates);
@@ -103,6 +103,28 @@ impl OptimizerRule for ExtractEquijoinPredicate {
                         null_equals_null,
                     })))
                 } else {
+                    let (equinullable_predicates, non_equinullable_expr) =
+                            split_eq_and_noneq_join_predicate_nullable(
+                                expr,
+                                left_schema,
+                                right_schema,
+                            )?;
+                    if !equinullable_predicates.is_empty() {
+                    on.extend(equinullable_predicates);
+                    Ok(Transformed::yes(LogicalPlan::Join(Join {
+                        left,
+                        right,
+                        on,
+                        filter: non_equinullable_expr,
+                        join_type,
+                        join_constraint,
+                        schema,
+                        null_equals_null: true,
+                    })))
+                    }
+                    else {
+
+
                     Ok(Transformed::no(LogicalPlan::Join(Join {
                         left,
                         right,
@@ -113,6 +135,7 @@ impl OptimizerRule for ExtractEquijoinPredicate {
                         schema,
                         null_equals_null,
                     })))
+                    }
                 }
             }
             _ => Ok(Transformed::no(plan)),
@@ -120,10 +143,11 @@ impl OptimizerRule for ExtractEquijoinPredicate {
     }
 }
 
-fn split_eq_and_noneq_join_predicate(
+fn split_equality_join_predicate(
     filter: Expr,
     left_schema: &Arc<DFSchema>,
     right_schema: &Arc<DFSchema>,
+    match_bin_op: Operator,
 ) -> Result<(Vec<EquijoinPredicate>, Option<Expr>)> {
     let exprs = split_conjunction_owned(filter);
 
@@ -131,11 +155,10 @@ fn split_eq_and_noneq_join_predicate(
     let mut accum_filters: Vec<Expr> = vec![];
     for expr in exprs {
         match expr {
-            Expr::BinaryExpr(BinaryExpr {
-                ref left,
-                op: Operator::Eq,
-                ref right,
-            }) => {
+            Expr::BinaryExpr(BinaryExpr { ref left, op, ref right }) if op == match_bin_op => {
+                let left = left.as_ref();
+                let right = right.as_ref();
+
                 let join_key_pair = find_valid_equijoin_key_pair(
                     left,
                     right,
@@ -162,6 +185,27 @@ fn split_eq_and_noneq_join_predicate(
 
     let result_filter = accum_filters.into_iter().reduce(Expr::and);
     Ok((accum_join_keys, result_filter))
+}
+
+fn split_eq_and_noneq_join_predicate(
+    filter: Expr,
+    left_schema: &Arc<DFSchema>,
+    right_schema: &Arc<DFSchema>,
+) -> Result<(Vec<EquijoinPredicate>, Option<Expr>)> {
+    split_equality_join_predicate(filter, left_schema, right_schema, Operator::Eq)
+}
+
+fn split_eq_and_noneq_join_predicate_nullable(
+    filter: Expr,
+    left_schema: &Arc<DFSchema>,
+    right_schema: &Arc<DFSchema>,
+) -> Result<(Vec<EquijoinPredicate>, Option<Expr>)> {
+    split_equality_join_predicate(
+        filter,
+        left_schema,
+        right_schema,
+        Operator::IsNotDistinctFrom,
+    )
 }
 
 #[cfg(test)]
