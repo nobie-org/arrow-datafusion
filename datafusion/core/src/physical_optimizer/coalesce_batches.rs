@@ -30,7 +30,10 @@ use crate::{
     },
 };
 
-use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter, TreeNodeVisitor};
+use datafusion_physical_plan::ExecutionPlan;
+
+use super::utils::is_recursive_query;
 
 /// Optimizer rule that introduces CoalesceBatchesExec to avoid overhead with small batches that
 /// are produced by highly selective filters
@@ -53,8 +56,47 @@ impl PhysicalOptimizerRule for CoalesceBatches {
             return Ok(plan);
         }
 
-        let target_batch_size = config.execution.batch_size;
-        plan.transform_up(&|plan| {
+        let mut rewriter = CoalesceVisitor {
+            target_batch_size: config.execution.batch_size,
+        };
+
+        plan.rewrite(& mut rewriter).data()
+    }
+
+    fn name(&self) -> &str {
+        "coalesce_batches"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+
+struct CoalesceVisitor {
+    target_batch_size: usize,
+}
+
+impl TreeNodeRewriter for CoalesceVisitor {
+    type Node = Arc<dyn ExecutionPlan>;
+
+    fn f_down(&mut self, node: Self::Node) -> Result<Transformed<Self::Node>> {
+        let is_recursive = is_recursive_query(&node);
+        if is_recursive {
+            Ok(Transformed::new(node, false, TreeNodeRecursion::Jump))
+        }
+        else {
+        Ok(Transformed::no(node))
+        }
+    }
+
+    fn f_up(&mut self, node: Self::Node) -> Result<Transformed<Self::Node>> {
+        let is_recursive = is_recursive_query(&node);
+        if is_recursive {
+            Ok(Transformed::no(node))
+        }
+        else {
+            let plan = node;
             let plan_any = plan.as_any();
             // The goal here is to detect operators that could produce small batches and only
             // wrap those ones with a CoalesceBatchesExec operator. An alternate approach here
@@ -75,20 +117,17 @@ impl PhysicalOptimizerRule for CoalesceBatches {
             if wrap_in_coalesce {
                 Ok(Transformed::yes(Arc::new(CoalesceBatchesExec::new(
                     plan,
-                    target_batch_size,
+                    self.target_batch_size,
                 ))))
             } else {
                 Ok(Transformed::no(plan))
             }
-        })
-        .data()
+
+        }
+        
+        
     }
 
-    fn name(&self) -> &str {
-        "coalesce_batches"
-    }
 
-    fn schema_check(&self) -> bool {
-        true
-    }
+
 }

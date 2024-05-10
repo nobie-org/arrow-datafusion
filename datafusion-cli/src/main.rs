@@ -171,6 +171,7 @@ async fn main_inner() -> Result<()> {
     if let Some(batch_size) = args.batch_size {
         session_config = session_config.with_batch_size(batch_size);
     };
+    session_config.options_mut().execution.enable_recursive_ctes = true;
 
     let rt_config = RuntimeConfig::new();
     let rt_config =
