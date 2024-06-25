@@ -69,12 +69,20 @@ impl OptimizerRule for ExtractEquijoinPredicate {
                 let right_schema = right.schema();
 
                 filter.as_ref().map_or(Result::Ok(None), |expr| {
-                    let (equijoin_predicates, non_equijoin_expr) =
+                    let (equijoin_predicates, non_equijoin_expr) = if *null_equals_null {
+                            split_eq_and_noneq_join_predicate_nullable(
+                                expr,
+                                left_schema,
+                                right_schema,
+                            )?
+                    }
+                    else {
                         split_eq_and_noneq_join_predicate(
                             expr,
                             left_schema,
                             right_schema,
-                        )?;
+                        )?
+                    };
 
                     // If there are no equijoin predicates and no existing on then try a nullable join
                     if equijoin_predicates.is_empty() && on.is_empty() {
