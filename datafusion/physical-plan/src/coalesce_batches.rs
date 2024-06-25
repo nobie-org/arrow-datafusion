@@ -210,7 +210,7 @@ impl CoalesceBatchesStream {
             return Poll::Ready(None);
         }
         loop {
-            if self.baseline_metrics.output_rows().value() > 10_000_000 {
+            if self.baseline_metrics.output_rows().value() > 40_000_000 {
                 return Poll::Ready(Some(Err(DataFusionError::ResourcesExhausted(
                     "Output row count exceeds 10M".to_string(),
                 ))));
