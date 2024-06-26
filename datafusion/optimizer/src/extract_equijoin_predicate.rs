@@ -86,8 +86,46 @@ impl OptimizerRule for ExtractEquijoinPredicate {
             }) => {
                 let left_schema = left.schema();
                 let right_schema = right.schema();
-                let (equijoin_predicates, non_equijoin_expr) =
-                    split_eq_and_noneq_join_predicate(expr, left_schema, right_schema)?;
+                let (equijoin_predicates, non_equijoin_expr) = if null_equals_null {
+                        split_eq_and_noneq_join_predicate_nullable(
+                            expr.clone(),
+                            left_schema,
+                            right_schema,
+                        )?
+                }
+                else {
+                    split_eq_and_noneq_join_predicate(
+                        expr.clone(),
+                        left_schema,
+                        right_schema,
+                    )?
+                };
+
+                if equijoin_predicates.is_empty() && on.is_empty() && !null_equals_null {
+                    let (equinullable_predicates, non_equinullable_expr) =
+                        split_eq_and_noneq_join_predicate_nullable(
+                            expr,
+                            left_schema,
+                            right_schema,
+                        )?;
+                    if !equinullable_predicates.is_empty() {
+
+                            on.extend(equinullable_predicates);
+
+                            let optimized_plan = LogicalPlan::Join(Join {
+                                left: left,
+                                right: right,
+                                on,
+                                filter: non_equinullable_expr,
+                                join_type: join_type,
+                                join_constraint: join_constraint,
+                                schema: schema,
+                                null_equals_null: true,
+                            });
+
+                        return Ok(Transformed::yes(optimized_plan));
+                    }
+                }
 
                 if !equijoin_predicates.is_empty() {
                     on.extend(equijoin_predicates);
