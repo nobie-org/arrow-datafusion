@@ -255,7 +255,11 @@ fn flatten_join_inputs(
 fn can_flatten_join_inputs(plan: &LogicalPlan) -> bool {
     // can only flatten inner / cross joins
     match plan {
-        LogicalPlan::Join(join) if join.join_type == JoinType::Inner => {}
+        LogicalPlan::Join(join) if join.join_type == JoinType::Inner => {
+            if join.null_equals_null {
+                return false;
+            }
+        }
         _ => return false,
     };
 
