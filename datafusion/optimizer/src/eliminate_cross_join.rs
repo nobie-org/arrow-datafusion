@@ -256,6 +256,9 @@ fn can_flatten_join_inputs(plan: &LogicalPlan) -> bool {
         LogicalPlan::Join(join) if join.join_type == JoinType::Inner => {
             // The filter of inner join will lost, skip this rule.
             // issue: https://github.com/apache/datafusion/issues/4844
+            if join.null_equals_null {
+                return false;
+            }
             if join.filter.is_some() {
                 return false;
             }
