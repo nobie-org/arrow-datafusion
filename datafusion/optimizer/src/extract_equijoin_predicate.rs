@@ -119,7 +119,7 @@ impl OptimizerRule for ExtractEquijoinPredicate {
     }
 }
 
-fn split_eq_and_noneq_join_predicate(
+fn old_split_eq_and_noneq_join_predicate(
     filter: Expr,
     left_schema: &DFSchema,
     right_schema: &DFSchema,
@@ -157,6 +157,71 @@ fn split_eq_and_noneq_join_predicate(
 
     let result_filter = accum_filters.into_iter().reduce(Expr::and);
     Ok((accum_join_keys, result_filter))
+}
+
+fn split_equality_join_predicate(
+    filter: Expr,
+    left_schema: &DFSchema,
+    right_schema: &DFSchema,
+    match_bin_op: Operator,
+) -> Result<(Vec<EquijoinPredicate>, Option<Expr>)> {
+    let exprs = split_conjunction_owned(filter);
+
+    let mut accum_join_keys: Vec<(Expr, Expr)> = vec![];
+    let mut accum_filters: Vec<Expr> = vec![];
+    for expr in exprs {
+        match expr {
+            Expr::BinaryExpr(BinaryExpr { ref left, ref op, ref right }) if op == &match_bin_op => {
+                let left = left.as_ref();
+                let right = right.as_ref();
+
+                let join_key_pair = find_valid_equijoin_key_pair(
+                    left,
+                    right,
+                    left_schema,
+                    right_schema,
+                )?;
+
+                if let Some((left_expr, right_expr)) = join_key_pair {
+                    let left_expr_type = left_expr.get_type(left_schema)?;
+                    let right_expr_type = right_expr.get_type(right_schema)?;
+
+                    if can_hash(&left_expr_type) && can_hash(&right_expr_type) {
+                        accum_join_keys.push((left_expr, right_expr));
+                    } else {
+                        accum_filters.push(expr);
+                    }
+                } else {
+                    accum_filters.push(expr.clone());
+                }
+            }
+            _ => accum_filters.push(expr.clone()),
+        }
+    }
+
+    let result_filter = accum_filters.into_iter().reduce(Expr::and);
+    Ok((accum_join_keys, result_filter))
+}
+
+fn split_eq_and_noneq_join_predicate(
+    filter: Expr,
+    left_schema: &DFSchema,
+    right_schema: &DFSchema,
+) -> Result<(Vec<EquijoinPredicate>, Option<Expr>)> {
+    split_equality_join_predicate(filter, left_schema, right_schema, Operator::Eq)
+}
+
+fn split_eq_and_noneq_join_predicate_nullable(
+    filter: Expr,
+    left_schema: &DFSchema,
+    right_schema: &DFSchema,
+) -> Result<(Vec<EquijoinPredicate>, Option<Expr>)> {
+    split_equality_join_predicate(
+        filter,
+        left_schema,
+        right_schema,
+        Operator::IsNotDistinctFrom,
+    )
 }
 
 #[cfg(test)]
