@@ -32,7 +32,7 @@ use crate::{
 use arrow::datatypes::SchemaRef;
 use arrow::error::Result as ArrowResult;
 use arrow::record_batch::RecordBatch;
-use datafusion_common::Result;
+use datafusion_common::{DataFusionError, Result};
 use datafusion_execution::TaskContext;
 
 use futures::stream::{Stream, StreamExt};
@@ -181,7 +181,7 @@ struct CoalesceBatchesStream {
     /// Execution metrics
     baseline_metrics: BaselineMetrics,
 
-
+    // Track how many rows last time we set the task to pending
     last_pending_row_count: usize
 }
 
@@ -221,6 +221,11 @@ impl CoalesceBatchesStream {
                 self.last_pending_row_count = curr_rows;
                 return Poll::Pending;
             }
+            if self.baseline_metrics.output_rows().value() > 30_000_000 {
+            return Poll::Ready(Some(Err(DataFusionError::ResourcesExhausted(
+                "Output row count exceeds 30M".to_string(),
+            ))));
+        }
             let input_batch = self.input.poll_next_unpin(cx);
             // records time on drop
             let _timer = cloned_time.timer();

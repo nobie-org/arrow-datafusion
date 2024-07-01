@@ -46,7 +46,7 @@ use arrow::array::{
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow::util::bit_util;
-use datafusion_common::{exec_err, JoinSide, Result, Statistics};
+use datafusion_common::{exec_err, DataFusionError, JoinSide, Result, Statistics};
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion_execution::TaskContext;
 use datafusion_expr::JoinType;
@@ -341,6 +341,7 @@ impl ExecutionPlan for NestedLoopJoinExec {
             is_exhausted: false,
             column_indices: self.column_indices.clone(),
             join_metrics,
+            last_pending_row_count: 0,
         }))
     }
 
@@ -442,6 +443,9 @@ struct NestedLoopJoinStream {
     // null_equals_null: bool
     /// Join execution metrics
     join_metrics: BuildProbeJoinMetrics,
+
+    // Track how many rows last time we set the task to pending
+    last_pending_row_count: usize,
 }
 
 fn build_join_indices(
@@ -486,6 +490,14 @@ impl NestedLoopJoinStream {
 
         // Get or initialize visited_left_side bitmap if required by join type
         let visited_left_side = left_data.bitmap();
+
+        let curr_rows = self.join_metrics.output_rows.value();
+        let delta = curr_rows - self.last_pending_row_count;
+        if delta > 64_000 {
+            cx.waker().wake_by_ref();
+            self.last_pending_row_count = curr_rows;
+            return Poll::Pending;
+        }
 
         self.outer_table
             .poll_next_unpin(cx)
@@ -577,30 +589,39 @@ fn join_left_and_right_batch(
     schema: &Schema,
     visited_left_side: &SharedBitmapBuilder,
 ) -> Result<RecordBatch> {
-    let indices_result = (0..left_batch.num_rows())
-        .map(|left_row_index| {
-            build_join_indices(left_row_index, right_batch, left_batch, filter)
-        })
-        .collect::<Result<Vec<(UInt64Array, UInt32Array)>>>();
+    let mut indices = Vec::with_capacity(left_batch.num_rows());
+    let mut total = 0_usize;
+    for left_row_index in 0..left_batch.num_rows() {
+        let res = build_join_indices(left_row_index, right_batch, left_batch, filter);
+        match res {
+            Err(err) => {
+                return exec_err!(
+                    "Fail to build join indices in NestedLoopJoinExec, error:{err}"
+                );
+            }
+            Ok((left_side, right_side)) => {
+                total += right_side.len();
+                indices.push((left_side, right_side));
+            }
+        }
+        if total > 30_000_000 {
+            return Err(DataFusionError::ResourcesExhausted("Too many rows in join result".to_string()));
+        }
+    }
 
     let mut left_indices_builder = UInt64Builder::new();
     let mut right_indices_builder = UInt32Builder::new();
-    let left_right_indices = match indices_result {
-        Err(err) => {
-            exec_err!("Fail to build join indices in NestedLoopJoinExec, error:{err}")
+    let left_right_indices = {
+        for (left_side, right_side) in indices {
+            left_indices_builder
+                .append_values(left_side.values(), &vec![true; left_side.len()]);
+            right_indices_builder
+                .append_values(right_side.values(), &vec![true; right_side.len()]);
         }
-        Ok(indices) => {
-            for (left_side, right_side) in indices {
-                left_indices_builder
-                    .append_values(left_side.values(), &vec![true; left_side.len()]);
-                right_indices_builder
-                    .append_values(right_side.values(), &vec![true; right_side.len()]);
-            }
-            Ok((
-                left_indices_builder.finish(),
-                right_indices_builder.finish(),
-            ))
-        }
+        Ok((
+            left_indices_builder.finish(),
+            right_indices_builder.finish(),
+        ))
     };
     match left_right_indices {
         Ok((left_side, right_side)) => {
