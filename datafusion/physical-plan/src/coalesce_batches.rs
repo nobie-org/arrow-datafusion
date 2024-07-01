@@ -152,6 +152,7 @@ impl ExecutionPlan for CoalesceBatchesExec {
             buffered_rows: 0,
             is_closed: false,
             baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
+            last_pending_row_count: 0
         }))
     }
 
@@ -179,6 +180,9 @@ struct CoalesceBatchesStream {
     is_closed: bool,
     /// Execution metrics
     baseline_metrics: BaselineMetrics,
+
+
+    last_pending_row_count: usize
 }
 
 impl Stream for CoalesceBatchesStream {
@@ -210,6 +214,13 @@ impl CoalesceBatchesStream {
             return Poll::Ready(None);
         }
         loop {
+            let curr_rows = self.baseline_metrics.output_rows().value();
+            let delta = curr_rows - self.last_pending_row_count;
+            if delta > 64_000 {
+                cx.waker().wake_by_ref();
+                self.last_pending_row_count = curr_rows;
+                return Poll::Pending;
+            }
             let input_batch = self.input.poll_next_unpin(cx);
             // records time on drop
             let _timer = cloned_time.timer();
