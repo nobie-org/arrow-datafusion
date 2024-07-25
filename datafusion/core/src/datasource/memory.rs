@@ -37,7 +37,8 @@ use crate::physical_planner::create_physical_sort_exprs;
 
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
-use datafusion_common::{not_impl_err, plan_err, Constraints, DFSchema, SchemaExt};
+use datafusion_common::stats::Precision;
+use datafusion_common::{not_impl_err, plan_err, Constraints, DFSchema, SchemaExt, Statistics};
 use datafusion_execution::TaskContext;
 use datafusion_physical_plan::metrics::MetricsSet;
 
@@ -66,11 +67,13 @@ pub struct MemTable {
     /// Optional pre-known sort order(s). Must be `SortExpr`s.
     /// inserting data into this table removes the order
     pub sort_order: Arc<Mutex<Vec<Vec<SortExpr>>>>,
+    num_rows: usize,
 }
 
 impl MemTable {
     /// Create a new in-memory table from the provided schema and record batches
     pub fn try_new(schema: SchemaRef, partitions: Vec<Vec<RecordBatch>>) -> Result<Self> {
+        let mut num_rows = 0_usize;
         for batches in partitions.iter().flatten() {
             let batches_schema = batches.schema();
             if !schema.contains(&batches_schema) {
@@ -80,6 +83,7 @@ impl MemTable {
                 );
                 return plan_err!("Mismatch between schema and batches");
             }
+            num_rows += batches.num_rows();
         }
 
         Ok(Self {
@@ -91,6 +95,7 @@ impl MemTable {
             constraints: Constraints::empty(),
             column_defaults: HashMap::new(),
             sort_order: Arc::new(Mutex::new(vec![])),
+            num_rows
         })
     }
 
@@ -204,6 +209,12 @@ impl TableProvider for MemTable {
 
     fn table_type(&self) -> TableType {
         TableType::Base
+    }
+
+    fn statistics(&self) -> Option<Statistics> {
+        let mut stats = Statistics::new_unknown(&self.schema);
+        stats.num_rows = Precision::Inexact(self.num_rows);
+        Some(stats)
     }
 
     async fn scan(
