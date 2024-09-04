@@ -1178,3 +1178,35 @@ drop table t1;
 
 statement ok
 drop table t0;
+
+
+# Test hash joins on is not distinct
+statement ok
+create table t1(label text, v1 int);
+
+statement ok
+create table t2(label text, v2 int);
+
+# test eliminate join when condition is false
+query TT
+explain select t1.label, t1.v1*t2.v2 from t1 join t2 on t1.label is not distinct from t2.label; 
+----
+logical_plan
+01)Projection: t1.label, t1.v1 * t2.v2
+02)--Inner Join: t1.label = t2.label
+03)----TableScan: t1 projection=[label, v1]
+04)----TableScan: t2 projection=[label, v2]
+physical_plan
+01)ProjectionExec: expr=[label@0 as label, v1@1 * v2@3 as t1.v1 * t2.v2]
+02)--RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+03)----CoalesceBatchesExec: target_batch_size=8192
+04)------HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(label@0, label@0)]
+05)--------MemoryExec: partitions=1, partition_sizes=[0]
+06)--------MemoryExec: partitions=1, partition_sizes=[0]
+
+
+statement ok
+drop table t1;
+
+statement ok
+drop table t2;
