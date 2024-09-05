@@ -104,13 +104,13 @@ impl OptimizerRule for ExtractEquijoinPredicate {
                         on.extend(equinullable_predicates);
 
                         let optimized_plan = LogicalPlan::Join(Join {
-                            left: left,
-                            right: right,
+                            left,
+                            right,
                             on,
                             filter: non_equinullable_expr,
-                            join_type: join_type,
-                            join_constraint: join_constraint,
-                            schema: schema,
+                            join_type,
+                            join_constraint,
+                            schema,
                             null_equals_null: true,
                         });
 
