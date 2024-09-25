@@ -175,6 +175,7 @@ impl ExecutionPlan for CoalesceBatchesExec {
             baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
             // Start by pulling data
             inner_state: CoalesceBatchesStreamState::Pull,
+            last_pending_row_count: 0
         }))
     }
 
@@ -212,6 +213,8 @@ struct CoalesceBatchesStream {
     /// The current inner state of the stream. This state dictates the current
     /// action or operation to be performed in the streaming process.
     inner_state: CoalesceBatchesStreamState,
+
+    last_pending_row_count: usize,
 }
 
 impl Stream for CoalesceBatchesStream {
@@ -282,6 +285,13 @@ impl CoalesceBatchesStream {
     ) -> Poll<Option<Result<RecordBatch>>> {
         let cloned_time = self.baseline_metrics.elapsed_compute().clone();
         loop {
+            let curr_rows = self.baseline_metrics.output_rows().value();
+            let delta = curr_rows - self.last_pending_row_count;
+            if delta > 64_000 {
+                cx.waker().wake_by_ref();
+                self.last_pending_row_count = curr_rows;
+                return Poll::Pending;
+            }
             match &self.inner_state {
                 CoalesceBatchesStreamState::Pull => {
                     // Attempt to pull the next batch from the input stream.
