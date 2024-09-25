@@ -30,7 +30,7 @@ use crate::{
 
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
-use datafusion_common::Result;
+use datafusion_common::{DataFusionError, Result};
 use datafusion_execution::TaskContext;
 
 use crate::coalesce::{BatchCoalescer, CoalescerState};
@@ -291,6 +291,11 @@ impl CoalesceBatchesStream {
                 cx.waker().wake_by_ref();
                 self.last_pending_row_count = curr_rows;
                 return Poll::Pending;
+            }
+                if self.baseline_metrics.output_rows().value() > 30_000_000 {
+                return Poll::Ready(Some(Err(DataFusionError::ResourcesExhausted(
+                    "Output row count exceeds 30M".to_string(),
+                ))));
             }
             match &self.inner_state {
                 CoalesceBatchesStreamState::Pull => {
