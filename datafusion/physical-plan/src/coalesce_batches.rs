@@ -221,9 +221,9 @@ impl CoalesceBatchesStream {
                 self.last_pending_row_count = curr_rows;
                 return Poll::Pending;
             }
-            if self.baseline_metrics.output_rows().value() > 30_000_000 {
+            if self.baseline_metrics.output_rows().value() > 50_000_000 {
             return Poll::Ready(Some(Err(DataFusionError::ResourcesExhausted(
-                "Output row count exceeds 30M".to_string(),
+                "Output row count exceeds 50M".to_string(),
             ))));
         }
             let input_batch = self.input.poll_next_unpin(cx);
