@@ -152,7 +152,7 @@ impl ExecutionPlan for CoalesceBatchesExec {
             buffered_rows: 0,
             is_closed: false,
             baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
-            last_pending_row_count: 0
+            last_pending_row_count: 0,
         }))
     }
 
@@ -182,7 +182,7 @@ struct CoalesceBatchesStream {
     baseline_metrics: BaselineMetrics,
 
     // Track how many rows last time we set the task to pending
-    last_pending_row_count: usize
+    last_pending_row_count: usize,
 }
 
 impl Stream for CoalesceBatchesStream {
@@ -221,11 +221,11 @@ impl CoalesceBatchesStream {
                 self.last_pending_row_count = curr_rows;
                 return Poll::Pending;
             }
-            if self.baseline_metrics.output_rows().value() > 50_000_000 {
-            return Poll::Ready(Some(Err(DataFusionError::ResourcesExhausted(
-                "Output row count exceeds 50M".to_string(),
-            ))));
-        }
+            if self.baseline_metrics.output_rows().value() > 200_000_000 {
+                return Poll::Ready(Some(Err(DataFusionError::ResourcesExhausted(
+                    "Output row count exceeds 200M".to_string(),
+                ))));
+            }
             let input_batch = self.input.poll_next_unpin(cx);
             // records time on drop
             let _timer = cloned_time.timer();
