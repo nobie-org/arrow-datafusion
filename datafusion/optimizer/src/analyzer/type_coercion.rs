@@ -561,7 +561,12 @@ fn coerce_window_frame(
                     || matches!(col_type, DataType::Null)
                 {
                     col_type
-                } else if is_datetime(col_type) {
+                } 
+                else if matches!(col_type, DataType::Boolean) {
+                    println!("{:?}", window_frame);
+                    &DataType::Boolean
+                }
+                else if is_datetime(col_type) {
                     &DataType::Interval(IntervalUnit::MonthDayNano)
                 } else {
                     return internal_err!(
