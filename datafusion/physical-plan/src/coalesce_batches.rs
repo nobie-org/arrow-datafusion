@@ -20,7 +20,7 @@
 use std::any::Any;
 use std::cell::LazyCell;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll};
 
 use super::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
@@ -288,7 +288,7 @@ enum CoalesceBatchesStreamState {
     Exhausted,
 }
 
-static BATCH_LIMIT_M: LazyCell<usize> = LazyCell::new(|| {
+static BATCH_LIMIT_M: LazyLock<usize> = LazyLock::new(|| {
     std::env::var("NOBIE_COALESCE_BATCHES_LIMIT")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
