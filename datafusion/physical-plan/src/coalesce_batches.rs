@@ -18,6 +18,7 @@
 //! [`CoalesceBatchesExec`] combines small batches into larger batches.
 
 use std::any::Any;
+use std::cell::LazyCell;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -177,7 +178,8 @@ impl ExecutionPlan for CoalesceBatchesExec {
             baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
             // Start by pulling data
             inner_state: CoalesceBatchesStreamState::Pull,
-            last_pending_row_count: 0
+            last_pending_row_count: 0,
+            limit_m: *BATCH_LIMIT_M,
         }))
     }
 
@@ -221,6 +223,8 @@ struct CoalesceBatchesStream {
     inner_state: CoalesceBatchesStreamState,
 
     last_pending_row_count: usize,
+
+    limit_m: usize
 }
 
 impl Stream for CoalesceBatchesStream {
@@ -284,6 +288,13 @@ enum CoalesceBatchesStreamState {
     Exhausted,
 }
 
+static BATCH_LIMIT_M: LazyCell<usize> = LazyCell::new(|| {
+    std::env::var("NOBIE_COALESCE_BATCHES_LIMIT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(300)
+});
+
 impl CoalesceBatchesStream {
     fn poll_next_inner(
         self: &mut Pin<&mut Self>,
@@ -298,9 +309,10 @@ impl CoalesceBatchesStream {
                 self.last_pending_row_count = curr_rows;
                 return Poll::Pending;
             }
-                if self.baseline_metrics.output_rows().value() > 200_000_000 {
+            let limit = self.limit_m * 1_000_000;
+                if self.baseline_metrics.output_rows().value() > limit {
                 return Poll::Ready(Some(Err(DataFusionError::ResourcesExhausted(
-                    "Output row count exceeds 200M".to_string(),
+                    format!("Output row count exceeds {}M", self.limit_m),
                 ))));
             }
             match &self.inner_state {
