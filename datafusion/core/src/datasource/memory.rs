@@ -70,12 +70,14 @@ pub struct MemTable {
     /// inserting data into this table removes the order
     pub sort_order: Arc<Mutex<Vec<Vec<SortExpr>>>>,
     num_rows: usize,
+    bytes_size: usize,
 }
 
 impl MemTable {
     /// Create a new in-memory table from the provided schema and record batches
     pub fn try_new(schema: SchemaRef, partitions: Vec<Vec<RecordBatch>>) -> Result<Self> {
         let mut num_rows = 0_usize;
+        let mut bytes_size = 0_usize;
         for batches in partitions.iter().flatten() {
             let batches_schema = batches.schema();
             if !schema.contains(&batches_schema) {
@@ -86,6 +88,7 @@ impl MemTable {
                 return plan_err!("Mismatch between schema and batches");
             }
             num_rows += batches.num_rows();
+            bytes_size += batches.get_array_memory_size();
         }
 
         Ok(Self {
@@ -97,7 +100,8 @@ impl MemTable {
             constraints: Constraints::empty(),
             column_defaults: HashMap::new(),
             sort_order: Arc::new(Mutex::new(vec![])),
-            num_rows
+            num_rows,
+            bytes_size,
         })
     }
 
@@ -224,6 +228,7 @@ impl TableProvider for MemTable {
     fn statistics(&self) -> Option<Statistics> {
         let mut stats = Statistics::new_unknown(&self.schema);
         stats.num_rows = Precision::Inexact(self.num_rows);
+        stats.total_byte_size = Precision::Inexact(self.bytes_size);
         Some(stats)
     }
 
