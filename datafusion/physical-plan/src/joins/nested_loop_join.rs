@@ -527,6 +527,7 @@ impl ExecutionPlan for NestedLoopJoinExec {
                 state: NestedLoopJoinStreamState::WaitBuildSide,
                 batch_transformer: BatchSplitter::new(batch_size),
                 left_data: None,
+                last_pending_row_count: 0,
             }))
         } else {
             Ok(Box::pin(NestedLoopJoinStream {
@@ -542,6 +543,7 @@ impl ExecutionPlan for NestedLoopJoinExec {
                 state: NestedLoopJoinStreamState::WaitBuildSide,
                 batch_transformer: NoopBatchTransformer::new(),
                 left_data: None,
+                last_pending_row_count: 0,
             }))
         }
     }
@@ -716,6 +718,8 @@ struct NestedLoopJoinStream<T> {
     batch_transformer: T,
     /// Result of the left data future
     left_data: Option<Arc<JoinLeftData>>,
+
+    last_pending_row_count: usize,
 }
 
 /// Creates a Cartesian product of two input batches, preserving the order of the right batch,
@@ -742,6 +746,12 @@ fn build_join_indices(
     let left_row_count = left_batch.num_rows();
     let right_row_count = right_batch.num_rows();
     let output_row_count = left_row_count * right_row_count;
+
+    if output_row_count > 200_000_000 {
+        return Err(datafusion_common::DataFusionError::ResourcesExhausted(
+            format!("Too many rows in join result: {}", output_row_count),
+        ));
+    }
 
     // We always use the same indices before applying the filter, so we can cache them
     let (left_indices_cache, right_indices_cache) = indices_cache;
@@ -808,7 +818,7 @@ impl<T: BatchTransformer> NestedLoopJoinStream<T> {
                     handle_state!(ready!(self.fetch_probe_batch(cx)))
                 }
                 NestedLoopJoinStreamState::ProcessProbeBatch(_) => {
-                    handle_state!(self.process_probe_batch())
+                    handle_state!(ready!(self.process_probe_batch(cx)))
                 }
                 NestedLoopJoinStreamState::ExhaustedProbeSide => {
                     handle_state!(self.process_unmatched_build_batch())
@@ -857,14 +867,23 @@ impl<T: BatchTransformer> NestedLoopJoinStream<T> {
     /// matched output, updates state to `FetchProbeBatch`.
     fn process_probe_batch(
         &mut self,
-    ) -> Result<StatefulStreamResult<Option<RecordBatch>>> {
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Result<StatefulStreamResult<Option<RecordBatch>>>> {
         let Some(left_data) = self.left_data.clone() else {
-            return internal_err!(
+            return Poll::Ready(internal_err!(
                 "Expected left_data to be Some in ProcessProbeBatch state"
-            );
+            ));
         };
         let visited_left_side = left_data.bitmap();
         let batch = self.state.try_as_process_probe_batch()?;
+
+        let cur_rows = self.join_metrics.output_rows.value();
+        let delta = cur_rows - self.last_pending_row_count;
+        if delta > 64_000 {
+            cx.waker().wake_by_ref();
+            self.last_pending_row_count = cur_rows;
+            return Poll::Pending;
+        }
 
         match self.batch_transformer.next() {
             None => {
@@ -887,7 +906,7 @@ impl<T: BatchTransformer> NestedLoopJoinStream<T> {
                 timer.done();
 
                 self.batch_transformer.set_batch(result?);
-                Ok(StatefulStreamResult::Continue)
+                Poll::Ready(Ok(StatefulStreamResult::Continue))
             }
             Some((batch, last)) => {
                 if last {
@@ -896,7 +915,7 @@ impl<T: BatchTransformer> NestedLoopJoinStream<T> {
 
                 self.join_metrics.output_batches.add(1);
                 self.join_metrics.output_rows.add(batch.num_rows());
-                Ok(StatefulStreamResult::Ready(Some(batch)))
+                Poll::Ready(Ok(StatefulStreamResult::Ready(Some(batch))))
             }
         }
     }
